@@ -1,6 +1,6 @@
 ---
 name: "bugreport-coordinator"
-description: "Coordinates the overall bug report analysis workflow, manages iteration, and generates final human-readable reports. Invoke when user wants to complete the full analysis workflow and generate final reports."
+description: "协调 bug report 分析工作流，管理迭代并生成最终报告。当用户需要完整分析流程、生成分析报告、协调多个分析模块时触发。"
 ---
 
 # Bug Report Coordinator

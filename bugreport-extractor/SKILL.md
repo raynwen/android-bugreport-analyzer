@@ -1,6 +1,6 @@
 ---
 name: "bugreport-extractor"
-description: "Recursively extracts nested compressed bug report files (zip/tar.gz/gz/bz2), generates file manifest and metadata. Invoke when user needs to extract Android bug report archives."
+description: "解压 Android bug report 归档文件 (zip/tar.gz/gz/bz2)，生成文件清单和元数据。当用户需要解压 bug report、提取 bugreport 文件、处理压缩的 bug 报告时触发。"
 ---
 
 # Bug Report Extractor

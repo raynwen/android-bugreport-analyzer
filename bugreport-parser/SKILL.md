@@ -1,6 +1,6 @@
 ---
 name: "bugreport-parser"
-description: "Extracts and parses key information from large bug report files using keyword matching and pattern recognition. Supports freeze analysis for Mars/Freecess/Freezer. Invoke when user needs to analyze Android bug reports for crashes, ANRs, or freeze issues."
+description: "解析 Android bug report 文件，提取日志、崩溃、ANR 等关键信息。支持冻结问题分析 (Mars/Freecess/Freezer)。当用户需要解析 bug、分析日志、提取 bugreport 信息、分析冻结问题时触发。"
 ---
 
 # Bug Report Parser

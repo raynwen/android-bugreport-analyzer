@@ -1,6 +1,6 @@
 ---
 name: "bugreport-analyzer"
-description: "Analyzes extracted bug report information to identify issue types, root causes, and provides recommendations. Supports freeze-related issue analysis (Mars/Freecess/Freezer). Invoke when user wants to analyze Android bug reports for crashes, ANRs, performance issues, or freeze problems."
+description: "分析 bug report 提取的信息，识别问题类型、根本原因并提供建议。支持冻结问题分析 (Mars/Freecess/Freezer)。当用户需要分析 bug、分析崩溃、分析 ANR、分析性能问题、分析冻结问题时触发。"
 ---
 
 # Bug Report Analyzer
