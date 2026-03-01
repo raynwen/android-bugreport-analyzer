@@ -4,7 +4,7 @@ import tarfile
 import shutil
 import threading
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 

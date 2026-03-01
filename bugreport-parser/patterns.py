@@ -14,7 +14,7 @@ class PatternEngine:
     @classmethod
     def compile(cls, pattern: str, flags: int = 0) -> Pattern:
         if cls.USE_REGEX_ENGINE:
-            return regex.compile(pattern, flags | regex.OPTIMIZE)
+            return regex.compile(pattern, flags)
         return re.compile(pattern, flags)
 
     @classmethod
