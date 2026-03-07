@@ -1,7 +1,7 @@
 # Android Bug Report 高效处理与精确分析系统架构设计
 
 > **作者**: 闫文峰
-> **版本**: 2.1
+> **版本**: 2.2
 > **更新日期**: 2026-03-07
 > **输入说明**: 直接读取 .txt 文本文件（如 `dumpstate.txt`），无需解压
 
@@ -11,6 +11,7 @@
 
 | 版本 | 日期 | 作者 | 变更内容 |
 |------|------|------|---------|
+| 2.2 | 2026-03-07 | 闫文峰 | 新增用户查询系统：预设优先 + 定制补充双模式 |
 | 2.1 | 2026-03-07 | 闫文峰 | 新增用户查询系统：关键词查询、时间段查询、组合查询 |
 | 2.0 | 2026-03-07 | 闫文峰 | 新增边界分隔符总表、分层 subsections 设计、优先级分类 |
 | 1.0 | 2026-03-03 | 闫文峰 | 初始版本 |
@@ -1588,122 +1589,178 @@ class BugReportProcessingSystem:
 
 ## 11. 用户查询系统
 
-### 11.1 查询场景分析
+### 11.1 设计原则
 
-用户使用 bugreport 分析系统时，主要有以下查询需求：
+本系统的查询设计遵循**简单实用**原则：
 
-| 场景 | 示例 | 查询类型 |
-|------|------|---------|
-| 关键词查询 | "查找所有包含 'ANR' 的日志" | 精确/模糊/正则 |
-| 时间段查询 | "10:00-10:01 之间发生了什么" | 范围查询 |
-| 组合查询 | "10:00-10:01 之间的 ANR 事件" | 关键词 + 时间 |
-| 上下文查询 | "ANR 前后 30 秒的内容" | 相对时间 |
-| 章节查询 | "dumpsys activity broadcasts" | 结构化查询 |
+| 原则 | 说明 |
+|------|------|
+| **预设优先** | YAML 已定义的关键词，使用预设索引 |
+| **定制补充** | YAML 未定义的关键词，按需生成定制索引 |
+| **无需缓存** | 每次查询独立处理，不做复杂缓存 |
 
-### 11.2 关键词查询设计
+### 11.2 查询流程
 
-#### 11.2.1 查询模式配置
+```
+用户输入查询
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│         关键词匹配                       │
+├─────────────────────────────────────────┤
+│                                         │
+│  YAML 已定义？                          │
+│      │                                  │
+│  ┌──┴──┐                                │
+│  │ Yes │ No                             │
+│  ▼     ▼                                │
+│ 预设索引  定制索引                       │
+│  (已生成)  (按需生成)                   │
+│                                         │
+└─────────────────────────────────────────┘
+```
+
+### 11.3 预设索引 vs 定制索引
+
+| 类型 | 来源 | 例子 | 处理方式 |
+|------|------|------|---------|
+| **预设索引** | YAML 配置 | ANR、OOM、dumpsys activity | 直接查已生成的索引 |
+| **定制索引** | 用户自定义 | com.newapp、0xDEADBEEF | 扫描文件，按需生成 |
+
+### 11.4 YAML 预设定义
+
+预设关键词在 `boundary_patterns.yaml` 中定义：
 
 ```yaml
-user_query:
-  # 匹配模式
-  match_mode: "exact"  # exact | fuzzy | regex | semantic
-  
-  # 模糊匹配配置
-  fuzzy:
-    max_distance: 3        # 最大编辑距离
-    include_variants: true  # 包含变体 (大小写、单复数)
-  
-  # 上下文配置
-  context:
-    before_lines: 5         # 关键词前 N 行
-    after_lines: 5          # 关键词后 N 行
-  
-  # 结果配置
-  results:
-    max_count: 100          # 最大返回数量
-    sort_by: "relevance"   # relevance | time | line_number
+# 预设关键词定义
+record_types:
+  - name: "dumpsys_normal"
+    keywords: ["dumpsys", "activity", "power", "window"]
+    subsections:
+      - name: "activity_broadcasts"
+        keywords: ["broadcast", "BROADCAST STATE"]
+      - name: "last_anr"
+        keywords: ["ANR", "LAST ANR"]
+
+interest_points:
+  - name: "crash"
+    keywords: ["crash", "FATAL", "Exception"]
+  - name: "anr"
+    keywords: ["ANR", "Application Not Responding"]
+  - name: "oom"
+    keywords: ["OOM", "OutOfMemory", "lowmemory"]
 ```
 
-#### 11.2.2 匹配引擎实现
+### 11.5 查询处理逻辑
 
 ```python
-class KeywordQueryEngine:
-    """关键词查询引擎"""
+class QueryHandler:
+    """查询处理器 - 简单实现"""
     
-    def __init__(self, config: QueryConfig):
-        self.config = config
-        self.index = self._load_index()
+    def __init__(self, yaml_config):
+        self.yaml = yaml_config
+        self.custom_results = {}  # 用户定制索引缓存
     
-    def query(self, keyword: str) -> List[QueryResult]:
-        """执行关键词查询"""
+    def query(self, user_keyword: str) -> List[QueryResult]:
+        """处理用户查询"""
         
-        if self.config.match_mode == "exact":
-            return self._exact_match(keyword)
-        elif self.config.match_mode == "fuzzy":
-            return self._fuzzy_match(keyword)
-        elif self.config.match_mode == "regex":
-            return self._regex_match(keyword)
+        # 1. 检查是否在 YAML 预设中
+        if self._is_preset_keyword(user_keyword):
+            return self._query_preset_index(user_keyword)
         else:
-            return self._semantic_match(keyword)
+            return self._query_custom_index(user_keyword)
     
-    def _exact_match(self, keyword: str) -> List[QueryResult]:
-        """精确匹配 - 使用倒排索引"""
-        result_lines = self.index.keyword_index.get(keyword, [])
+    def _is_preset_keyword(self, keyword: str) -> bool:
+        """检查是否是预设关键词"""
         
-        results = []
-        for line_num in result_lines:
-            context = self._get_context(line_num)
-            results.append(QueryResult(
-                line_number=line_num,
-                content=self._read_line(line_num),
-                context_before=context.before,
-                context_after=context.after,
-                relevance=1.0
-            ))
+        # 检查 record_types
+        for record_type in self.yaml.get("record_types", []):
+            if keyword in record_type.get("keywords", []):
+                return True
+            for subsection in record_type.get("subsections", []):
+                if keyword in subsection.get("keywords", []):
+                    return True
+        
+        # 检查 interest_points
+        for point in self.yaml.get("interest_points", []):
+            if keyword in point.get("keywords", []):
+                return True
+        
+        return False
+    
+    def _query_preset_index(self, keyword: str) -> List[QueryResult]:
+        """查询预设索引 - 已生成，直接返回"""
+        
+        # 预设索引已预先生成，直接查询
+        index_file = f"index/preset_{keyword}.json"
+        
+        if os.path.exists(index_file):
+            return self._load_index(index_file)
+        
+        # 索引不存在，生成一次
+        return self._build_preset_index(keyword)
+    
+    def _query_custom_index(self, keyword: str) -> List[QueryResult]:
+        """查询定制索引 - 按需生成"""
+        
+        # 检查缓存
+        if keyword in self.custom_results:
+            return self.custom_results[keyword]
+        
+        # 扫描文件生成结果
+        results = self._scan_file(keyword)
+        
+        # 缓存结果
+        self.custom_results[keyword] = results
+        
         return results
     
-    def _fuzzy_match(self, keyword: str) -> List[QueryResult]:
-        """模糊匹配 - 支持编辑距离"""
-        candidates = []
-        
-        for word in self.index.all_words:
-            distance = levenshtein_distance(keyword, word)
-            if distance <= self.config.fuzzy.max_distance:
-                candidates.append((word, distance))
-        
-        candidates.sort(key=lambda x: x[1])
+    def _scan_file(self, keyword: str) -> List[QueryResult]:
+        """扫描文件查找关键词"""
         
         results = []
-        for word, distance in candidates[:self.config.results.max_count]:
-            results.extend(self._exact_match(word))
+        
+        with open(self.file_path, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                if keyword in line:
+                    results.append(QueryResult(
+                        line_number=line_num,
+                        content=line.strip()
+                    ))
         
         return results
-    
-    def _regex_match(self, keyword: str) -> List[QueryResult]:
-        """正则表达式匹配"""
-        import re
-        pattern = re.compile(keyword)
-        
-        results = []
-        for line_num, line in self._stream_lines():
-            if pattern.search(line):
-                results.append(QueryResult(
-                    line_number=line_num,
-                    content=line,
-                    relevance=1.0
-                ))
-        
-        return results[:self.config.results.max_count]
 ```
 
-### 11.3 时间段查询设计
+### 11.6 查询示例
 
-#### 11.3.1 时间格式识别
+| 用户输入 | 匹配类型 | 索引来源 |
+|---------|---------|---------|
+| "ANR" | 预设 | 预设索引 (已生成) |
+| "broadcast" | 预设 | 预设索引 (已生成) |
+| "com.newapp" | 定制 | 按需扫描生成 |
+| "0xDEADBEEF" | 定制 | 按需扫描生成 |
 
-bugreport 中存在多种时间格式，需要统一处理：
+---
 
-| 格式类型 | 正则模式 | 示例 |
+## 总结
+
+本方案提供了一个完整的 Android Bug Report 处理系统架构，涵盖：
+
+| 模块 | 核心功能 |
+|------|---------|
+| **文件分析** | 结构识别、边界检测、智能分块 |
+| **流式读取** | 内存优化、并行读取、进度追踪 |
+| **持久化** | 多格式支持、压缩存储、批量写入 |
+| **索引系统** | 预设索引 + 定制索引双模式 |
+| **用户查询** | YAML 预设优先 + 用户定制补充 |
+| **处理流程** | 8 阶段标准化管道 |
+| **性能优化** | 并行处理、资源调度 |
+
+这个架构可以处理 **500MB+** 的 bug report 文件，同时保证 **100% 的数据完整性** 和 **可检索性**。
+
+---
+
+## 12. 版本信息
 |---------|---------|------|
 | logcat | `^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}` | `12-30 10:00:21.123` |
 | kernel | `^\[\d+\.\d+\]` | `[175555.553540]` |
@@ -1929,6 +1986,4 @@ class IndexManager:
 | **处理流程** | 8 阶段标准化管道 |
 | **性能优化** | 并行处理、缓存策略、资源调度 |
 
-这个架构可以处理 **500MB+** 的 bug report 文件，同时保证 **100% 的数据完整性** 和 **可检索性**。
-
-需要我继续完善某个具体模块的实现细节吗？
+这个架构可以处理 **500MB+** 的 bug report 文件，同时保证 **100%** 的数据完整性 和 **可检索性**。
