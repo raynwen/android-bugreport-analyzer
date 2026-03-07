@@ -1,7 +1,7 @@
 # Android Bug Report 高效处理与精确分析系统架构设计
 
 > **作者**: 闫文峰
-> **版本**: 2.0
+> **版本**: 2.1
 > **更新日期**: 2026-03-07
 > **输入说明**: 直接读取 .txt 文本文件（如 `dumpstate.txt`），无需解压
 
@@ -11,6 +11,7 @@
 
 | 版本 | 日期 | 作者 | 变更内容 |
 |------|------|------|---------|
+| 2.1 | 2026-03-07 | 闫文峰 | 新增用户查询系统：关键词查询、时间段查询、组合查询 |
 | 2.0 | 2026-03-07 | 闫文峰 | 新增边界分隔符总表、分层 subsections 设计、优先级分类 |
 | 1.0 | 2026-03-03 | 闫文峰 | 初始版本 |
 
@@ -1581,6 +1582,335 @@ class BugReportProcessingSystem:
             index_size=self.query_engine.index_size(),
             storage_size=self.storage.total_size()
         )
+```
+
+---
+
+## 11. 用户查询系统
+
+### 11.1 查询场景分析
+
+用户使用 bugreport 分析系统时，主要有以下查询需求：
+
+| 场景 | 示例 | 查询类型 |
+|------|------|---------|
+| 关键词查询 | "查找所有包含 'ANR' 的日志" | 精确/模糊/正则 |
+| 时间段查询 | "10:00-10:01 之间发生了什么" | 范围查询 |
+| 组合查询 | "10:00-10:01 之间的 ANR 事件" | 关键词 + 时间 |
+| 上下文查询 | "ANR 前后 30 秒的内容" | 相对时间 |
+| 章节查询 | "dumpsys activity broadcasts" | 结构化查询 |
+
+### 11.2 关键词查询设计
+
+#### 11.2.1 查询模式配置
+
+```yaml
+user_query:
+  # 匹配模式
+  match_mode: "exact"  # exact | fuzzy | regex | semantic
+  
+  # 模糊匹配配置
+  fuzzy:
+    max_distance: 3        # 最大编辑距离
+    include_variants: true  # 包含变体 (大小写、单复数)
+  
+  # 上下文配置
+  context:
+    before_lines: 5         # 关键词前 N 行
+    after_lines: 5          # 关键词后 N 行
+  
+  # 结果配置
+  results:
+    max_count: 100          # 最大返回数量
+    sort_by: "relevance"   # relevance | time | line_number
+```
+
+#### 11.2.2 匹配引擎实现
+
+```python
+class KeywordQueryEngine:
+    """关键词查询引擎"""
+    
+    def __init__(self, config: QueryConfig):
+        self.config = config
+        self.index = self._load_index()
+    
+    def query(self, keyword: str) -> List[QueryResult]:
+        """执行关键词查询"""
+        
+        if self.config.match_mode == "exact":
+            return self._exact_match(keyword)
+        elif self.config.match_mode == "fuzzy":
+            return self._fuzzy_match(keyword)
+        elif self.config.match_mode == "regex":
+            return self._regex_match(keyword)
+        else:
+            return self._semantic_match(keyword)
+    
+    def _exact_match(self, keyword: str) -> List[QueryResult]:
+        """精确匹配 - 使用倒排索引"""
+        result_lines = self.index.keyword_index.get(keyword, [])
+        
+        results = []
+        for line_num in result_lines:
+            context = self._get_context(line_num)
+            results.append(QueryResult(
+                line_number=line_num,
+                content=self._read_line(line_num),
+                context_before=context.before,
+                context_after=context.after,
+                relevance=1.0
+            ))
+        return results
+    
+    def _fuzzy_match(self, keyword: str) -> List[QueryResult]:
+        """模糊匹配 - 支持编辑距离"""
+        candidates = []
+        
+        for word in self.index.all_words:
+            distance = levenshtein_distance(keyword, word)
+            if distance <= self.config.fuzzy.max_distance:
+                candidates.append((word, distance))
+        
+        candidates.sort(key=lambda x: x[1])
+        
+        results = []
+        for word, distance in candidates[:self.config.results.max_count]:
+            results.extend(self._exact_match(word))
+        
+        return results
+    
+    def _regex_match(self, keyword: str) -> List[QueryResult]:
+        """正则表达式匹配"""
+        import re
+        pattern = re.compile(keyword)
+        
+        results = []
+        for line_num, line in self._stream_lines():
+            if pattern.search(line):
+                results.append(QueryResult(
+                    line_number=line_num,
+                    content=line,
+                    relevance=1.0
+                ))
+        
+        return results[:self.config.results.max_count]
+```
+
+### 11.3 时间段查询设计
+
+#### 11.3.1 时间格式识别
+
+bugreport 中存在多种时间格式，需要统一处理：
+
+| 格式类型 | 正则模式 | 示例 |
+|---------|---------|------|
+| logcat | `^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}` | `12-30 10:00:21.123` |
+| kernel | `^\[\d+\.\d+\]` | `[175555.553540]` |
+| dumpsys | `ending at:\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}` | `ending at: 2025-12-30 10:00:21` |
+| system | `^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}` | `12-30 10:00:23` |
+
+```python
+class TimeParser:
+    """时间解析器"""
+    
+    TIME_PATTERNS = {
+        "logcat": r"^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})",
+        "kernel": r"^\[(\d+\.\d+)\]",
+        "dumpsys": r"ending at:\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+        "system": r"^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+    }
+    
+    def parse(self, line: str) -> Optional[float]:
+        """解析行中的时间戳，返回 Unix 时间戳"""
+        
+        for format_name, pattern in self.TIME_PATTERNS.items():
+            match = re.match(pattern, line)
+            if match:
+                return self._to_timestamp(format_name, match.group(1))
+        
+        return None
+    
+    def parse_user_input(self, time_str: str) -> float:
+        """解析用户输入的时间字符串"""
+        
+        # 支持格式:
+        # - "10:00:00" (今天, 当天的相对时间)
+        # - "2025-12-30 10:00:00" (完整日期时间)
+        # - "10:00" (今天, 精确到分钟)
+        
+        # ...
+```
+
+#### 11.3.2 时间索引构建
+
+```python
+class TimeIndex:
+    """时间索引 - 支持快速范围查询"""
+    
+    def __init__(self):
+        self.sorted_entries: List[TimeEntry] = []
+        self.line_to_time: Dict[int, float] = {}
+    
+    def build(self, file_path: str):
+        """构建时间索引"""
+        
+        with open(file_path, 'r') as f:
+            for line_num, line in enumerate(f):
+                timestamp = TimeParser().parse(line)
+                if timestamp:
+                    self.sorted_entries.append(TimeEntry(line_num, timestamp))
+                    self.line_to_time[line_num] = timestamp
+        
+        self.sorted_entries.sort(key=lambda x: x.timestamp)
+    
+    def query_range(self, start_time: float, end_time: float) -> List[int]:
+        """查询时间范围内的行号 - 二分查找"""
+        
+        start_idx = bisect_left(self.sorted_entries, start_time, 
+                                key=lambda x: x.timestamp)
+        end_idx = bisect_right(self.sorted_entries, end_time, 
+                              key=lambda x: x.timestamp)
+        
+        return [entry.line_num for entry in self.sorted_entries[start_idx:end_idx]]
+```
+
+### 11.4 组合查询设计
+
+#### 11.4.1 查询语言
+
+支持类似 SQL 的查询语法：
+
+```
+# 关键词查询
+SELECT * WHERE keyword = "ANR"
+
+# 时间范围查询
+SELECT * WHERE time BETWEEN "10:00:00" AND "10:01:00"
+
+# 组合查询
+SELECT * WHERE keyword = "ANR" AND time BETWEEN "10:00:00" AND "10:01:00"
+
+# 上下文查询
+SELECT * WHERE keyword = "ANR" BEFORE 30s AND AFTER 30s
+
+# 章节查询
+SELECT * FROM section = "activity" WHERE keyword = "broadcast"
+```
+
+#### 11.4.2 查询解析器
+
+```python
+class QueryParser:
+    """查询解析器 - 将用户输入转换为结构化查询"""
+    
+    def parse(self, query_str: str) -> ParsedQuery:
+        """解析用户查询字符串"""
+        
+        parsed = ParsedQuery()
+        
+        # 解析关键词
+        if "keyword" in query_str:
+            parsed.keyword = self._extract_keyword(query_str)
+        
+        # 解析时间范围
+        if "time" in query_str or "BETWEEN" in query_str:
+            parsed.time_range = self._extract_time_range(query_str)
+        
+        # 解析章节
+        if "section" in query_str or "FROM" in query_str:
+            parsed.section = self._extract_section(query_str)
+        
+        # 解析上下文
+        if "BEFORE" in query_str or "AFTER" in query_str:
+            parsed.context = self._extract_context(query_str)
+        
+        return parsed
+```
+
+#### 11.4.3 查询执行引擎
+
+```python
+class QueryExecutor:
+    """查询执行引擎"""
+    
+    def execute(self, parsed_query: ParsedQuery) -> QueryResultSet:
+        """执行查询并返回结果"""
+        
+        # 阶段1: 章节过滤
+        if parsed_query.section:
+            candidate_lines = self._filter_by_section(parsed_query.section)
+        else:
+            candidate_lines = self._get_all_lines()
+        
+        # 阶段2: 时间过滤
+        if parsed_query.time_range:
+            candidate_lines = self._filter_by_time(
+                candidate_lines, 
+                parsed_query.time_range
+            )
+        
+        # 阶段3: 关键词过滤
+        if parsed_query.keyword:
+            candidate_lines = self._filter_by_keyword(
+                candidate_lines,
+                parsed_query.keyword
+            )
+        
+        # 阶段4: 提取上下文
+        results = self._extract_context(
+            candidate_lines,
+            parsed_query.context
+        )
+        
+        # 阶段5: 排序
+        return self._sort_results(results, parsed_query.sort_by)
+```
+
+### 11.5 索引优化策略
+
+为了支持高效的查询，需要预处理以下索引：
+
+| 索引类型 | 构建时机 | 查询用途 | 大小估计 |
+|---------|---------|---------|---------|
+| **倒排索引** | 处理时 | 关键词查询 | 10-50 MB |
+| **时间索引** | 处理时 | 时间段查询 | 5-20 MB |
+| **行号索引** | 处理时 | 快速定位 | 1-5 MB |
+| **章节索引** | 处理时 | 章节过滤 | 1-5 MB |
+| **Bloom Filter** | 预处理 | 快速判断是否存在 | < 1 MB |
+
+```python
+class IndexManager:
+    """索引管理器"""
+    
+    def build_all_indexes(self, chunk_dir: str):
+        """构建所有索引"""
+        
+        # 1. 倒排索引 - 关键词到行号
+        self.inverted_index = InvertedIndexBuilder().build(chunk_dir)
+        
+        # 2. 时间索引 - 时间到行号范围
+        self.time_index = TimeIndexBuilder().build(chunk_dir)
+        
+        # 3. 章节索引 - 章节名到行号范围
+        self.section_index = SectionIndexBuilder().build(chunk_dir)
+        
+        # 4. 保存索引
+        self._save_indexes()
+    
+    def _save_indexes(self):
+        """保存索引到磁盘"""
+        
+        import pickle
+        
+        with open("inverted_index.pkl", "wb") as f:
+            pickle.dump(self.inverted_index, f)
+        
+        with open("time_index.pkl", "wb") as f:
+            pickle.dump(self.time_index, f)
+        
+        with open("section_index.pkl", "wb") as f:
+            pickle.dump(self.section_index, f)
 ```
 
 ---
