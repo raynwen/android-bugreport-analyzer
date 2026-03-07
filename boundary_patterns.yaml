@@ -1,0 +1,956 @@
+# Android Bug Report 边界模式配置 (基于 dumpstate.txt 实际结构)
+# 作者: 闫文峰
+# 版本: 2.0 - 完整版
+# 源文件: dumpstate.txt (196.4 MB)
+# 设备: SM-F9660 (Samsung Android 16)
+
+version: "2.0"
+
+# ================================================================================
+# 边界分隔符总表 (所有发现的特殊字符模式)
+# ================================================================================
+
+boundary_markers:
+
+  # 类型1: 等号分隔符 (文件头/章节标题)
+  # 示例: ========================================================
+  equals_separator:
+    pattern: "^={20,}$"
+    description: "文件头或大章节标题分隔符"
+    usage: ["header", "major_section"]
+    line_examples:
+      - "========================================================"
+      - "==================== Basic dump state ===================="
+
+  # 类型2: 短横线分隔符 (章节标题)
+  # 示例: ------ MEMORY INFO (/proc/meminfo) ------
+  dash_separator:
+    pattern: "^------ .+ ------$"
+    description: "标准章节标题分隔符"
+    usage: ["section_header", "chapter_title"]
+    line_examples:
+      - "------ MEMORY INFO (/proc/meminfo) ------"
+      - "------ DUMPSYS CRITICAL (/system/bin/dumpsys) ------"
+
+  # 类型3a: 大章节持续时间标记 (章节结束)
+  # 示例: ------ 0.012s was the duration of 'MEMORY INFO' ------
+  duration_marker_major:
+    pattern: "^------ \\d+\\.\\d+s was the duration of"
+    description: "大章节执行时间标记，表示主章节结束"
+    usage: ["major_section_end"]
+    line_examples:
+      - "------ 0.012s was the duration of 'MEMORY INFO' ------"
+      - "------ 1.067s was the duration of 'DUMPSYS CRITICAL' ------"
+
+  # 类型3b: dumpsys 子章节持续时间标记
+  # 示例: --------- 0.297s was the duration of dumpsys activity, ending at: 2025-12-30 10:00:21
+  duration_marker_dumpsys:
+    pattern: "^---------+ \\d+\\.\\d+s was the duration of dumpsys"
+    description: "dumpsys 内部子章节结束标记"
+    usage: ["dumpsys_subsection_end"]
+    line_examples:
+      - "--------- 0.297s was the duration of dumpsys activity, ending at: 2025-12-30 10:00:21"
+      - "--------- 0.027s was the duration of dumpsys SurfaceFlinger, ending at: 2025-12-30 10:00:20"
+
+  # 类型4: 星号分隔符 (电池日志/崩溃信息)
+  # 示例: *****Battery Power On Logs*****
+  asterisk_separator:
+    pattern: "^\\*{3,}.+\\*{3,}$"
+    description: "电池日志或特殊标记"
+    usage: ["battery_log", "special_marker"]
+    line_examples:
+      - "*****Battery Power On Logs*****"
+      - "*****Battery LPM Logs*****"
+      - "*****Battery LPM Logs End*****"
+
+  # 类型5: 井号分隔符 (Samsung dumpsys 服务)
+  # 示例: ##### SEP UNION Main SERVICE #####
+  hash_separator:
+    pattern: "^#{3,}.+#{3,}$"
+    description: "Samsung 特定系统服务 dumpsys"
+    usage: ["samsung_dumpsys", "service_dump"]
+    line_examples:
+      - "##### SEP UNION Main SERVICE #####"
+      - "##### SmartManagerService  #####"
+      - "##### DUMP OF Theme #####"
+
+  # 类型6: 进程 Trace 开始
+  # 示例: ----- pid 933 at 2025-12-30 10:00:23.843902874+0800 -----
+  trace_start:
+    pattern: "^----- pid \\d+ at"
+    description: "进程堆栈跟踪开始"
+    usage: ["trace_begin", "stack_trace"]
+    line_examples:
+      - "----- pid 933 at 2025-12-30 10:00:23.843902874+0800 -----"
+
+  # 类型7: 进程 Trace 结束
+  # 示例: ----- end 933 -----
+  trace_end:
+    pattern: "^----- end \\d+$"
+    description: "进程堆栈跟踪结束"
+    usage: ["trace_end"]
+    line_examples:
+      - "----- end 933 -----"
+
+  # 类型8: Waiting Channels (等待通道)
+  waiting_channels:
+    pattern: "^----- Waiting Channels:"
+    description: "进程等待的 Binder 通道"
+    usage: ["binder_wait"]
+    line_examples:
+      - "----- Waiting Channels: pid 1659 at 2025-12-30 10:00:23.847556780+0800 -----"
+
+  # 类型9: dumpsys 内部小标题
+  # 示例: ---------SurfaceFlinger Effects--------
+  dumpsys_subheader:
+    pattern: "^---------+.+---------$"
+    description: "dumpsys 输出内部子章节"
+    usage: ["dumpsys_subsection"]
+    line_examples:
+      - "---------SurfaceFlinger Effects--------"
+      - "------------------+----+-------------"
+
+  # 类型10: 内核日志时间戳
+  # 示例: [175555.553540] [0:    kworker/0:2:12056] message
+  kernel_timestamp:
+    pattern: "^\\[\\s*\\d+\\.\\d+\\]"
+    description: "内核日志时间戳"
+    usage: ["kernel_log", "dmesg"]
+    line_examples:
+      - "[175555.553540] [0:    kworker/0:2:12056] max77775: max77775_usbc_opcode_read"
+
+# ================================================================================
+# 记录类型定义 (Record Types) - 完整版
+# ================================================================================
+
+record_types:
+
+  # ============================================================================
+  # 1. 文件头信息 (Header)
+  # ============================================================================
+  header:
+    priority: LOW
+    category: "meta"
+    boundary_type: "equals_separator"
+    description: "Bugreport 文件头信息"
+    start_pattern: "^==+$"
+    end_pattern: "^------ MEMORY INFO"
+    example: "========================================================"
+    line_count_estimate: 10
+
+  # ============================================================================
+  # 2. 内存信息 (Memory)
+  # ============================================================================
+  memory_info:
+    priority: MEDIUM
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "内存信息 (/proc/meminfo)"
+    start_pattern: "^------ MEMORY INFO"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'MEMORY INFO'"
+    line_count_estimate: 60
+    size_estimate_kb: 10
+
+  vmstat:
+    priority: LOW
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "虚拟内存统计 (/proc/vmstat)"
+    start_pattern: "^------ VIRTUAL MEMORY STATS"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'VIRTUAL MEMORY STATS'"
+    line_count_estimate: 160
+
+  # ============================================================================
+  # 3. Binder 信息 (Binder) - 性能分析关键
+  # ============================================================================
+  binder_failed_transaction:
+    priority: HIGH
+    category: "binder"
+    boundary_type: "dash_separator"
+    description: "Binder 失败事务日志"
+    start_pattern: "^------ BINDER FAILED TRANSACTION LOG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'BINDER FAILED TRANSACTION LOG'"
+    line_count_estimate: 35
+
+  binder_transaction:
+    priority: HIGH
+    category: "binder"
+    boundary_type: "dash_separator"
+    description: "Binder 事务日志"
+    start_pattern: "^------ BINDER TRANSACTION LOG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'BINDER TRANSACTION LOG'"
+    line_count_estimate: 35
+
+  binder_stats:
+    priority: MEDIUM
+    category: "binder"
+    boundary_type: "dash_separator"
+    description: "Binder 统计信息"
+    start_pattern: "^------ BINDER STATS"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'BINDER STATS'"
+    line_count_estimate: 8400
+
+  binder_state:
+    priority: HIGH
+    category: "binder"
+    boundary_type: "dash_separator"
+    description: "Binder 状态 (最长章节之一)"
+    start_pattern: "^------ BINDER STATE"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'BINDER STATE'"
+    line_count_estimate: 51600
+    size_estimate_mb: 15
+
+  # ============================================================================
+  # 4. dumpsys 输出 (系统服务) - 最重要
+  # ============================================================================
+  dumpsys_critical:
+    priority: CRITICAL
+    category: "dumpsys"
+    boundary_type: "dash_separator"
+    description: "Dumpsys Critical 系统服务 (SurfaceFlinger等)"
+    start_pattern: "^------ DUMPSYS CRITICAL"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'DUMPSYS CRITICAL'"
+    line_count_estimate: 35600
+    size_estimate_mb: 10
+
+  dumpsys_high:
+    priority: HIGH
+    category: "dumpsys"
+    boundary_type: "dash_separator"
+    description: "Dumpsys High 系统服务"
+    start_pattern: "^------ DUMPSYS HIGH"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'DUMPSYS HIGH'"
+    line_count_estimate: 12400
+    size_estimate_mb: 3.5
+
+  dumpsys_normal:
+    priority: MEDIUM
+    category: "dumpsys"
+    boundary_type: "dash_separator"
+    description: "Dumpsys Normal 系统服务 (最大章节，包含所有子章节)"
+    start_pattern: "^------ DUMPSYS NORMAL"
+    end_pattern: "^------ (SYSTEM LOG|LOGCAT|KERNEL LOG|SERIALIZE PERFETTO TRACE)"
+    line_count_estimate: 700000
+    size_estimate_mb: 200
+    subsections:
+
+      # ============================================================================
+      # A. dumpsys 子章节 (通过 duration marker 识别)
+      # ============================================================================
+      - name: "SurfaceFlinger"
+        pattern: "--------- 0.027s was the duration of dumpsys SurfaceFlinger"
+        priority: "HIGH"
+        category: "graphics"
+      - name: "SurfaceFlingerAIDL"
+        pattern: "--------- 0.006s was the duration of dumpsys SurfaceFlingerAIDL"
+        priority: "HIGH"
+        category: "graphics"
+      - name: "activity"
+        pattern: "--------- 0.297s was the duration of dumpsys activity"
+        priority: "CRITICAL"
+        category: "system"
+      - name: "cpuinfo"
+        pattern: "--------- 0.061s was the duration of dumpsys cpuinfo"
+        priority: "MEDIUM"
+        category: "system"
+      - name: "display"
+        pattern: "--------- 0.082s was the duration of dumpsys display"
+        priority: "MEDIUM"
+        category: "display"
+      - name: "input"
+        pattern: "--------- 0.076s was the duration of dumpsys input"
+        priority: "HIGH"
+        category: "input"
+      - name: "input_method"
+        pattern: "--------- 0.065s was the duration of dumpsys input_method"
+        priority: "HIGH"
+        category: "input"
+      - name: "notification"
+        pattern: "--------- 0.140s was the duration of dumpsys notification"
+        priority: "MEDIUM"
+        category: "notification"
+      - name: "power"
+        pattern: "--------- 0.091s was the duration of dumpsys power"
+        priority: "HIGH"
+        category: "power"
+      - name: "sensorservice"
+        pattern: "--------- 0.100s was the duration of dumpsys sensorservice"
+        priority: "MEDIUM"
+        category: "sensor"
+      - name: "window"
+        pattern: "--------- 0.117s was the duration of dumpsys window"
+        priority: "HIGH"
+        category: "window"
+      - name: "meminfo"
+        pattern: "--------- 30.847s was the duration of dumpsys meminfo"
+        priority: "HIGH"
+        category: "memory"
+      - name: "network_stack"
+        pattern: "--------- 0.094s was the duration of dumpsys network_stack"
+        priority: "MEDIUM"
+        category: "network"
+      - name: "tethering"
+        pattern: "--------- 0.024s was the duration of dumpsys tethering"
+        priority: "MEDIUM"
+        category: "network"
+      - name: "statusbar"
+        pattern: "--------- 0.154s was the duration of dumpsys statusbar"
+        priority: "MEDIUM"
+        category: "ui"
+      - name: "samsungnfc"
+        pattern: "--------- 0.077s was the duration of dumpsys samsungnfc"
+        priority: "LOW"
+        category: "nfc"
+      - name: "nfc"
+        pattern: "--------- 0.044s was the duration of dumpsys nfc"
+        priority: "LOW"
+        category: "nfc"
+      - name: "uwb"
+        pattern: "--------- 0.157s was the duration of dumpsys uwb"
+        priority: "LOW"
+        category: "uwb"
+      - name: "secims"
+        pattern: "--------- 5.085s was the duration of dumpsys secims"
+        priority: "HIGH"
+        category: "security"
+      - name: "phone"
+        pattern: "--------- 0.181s was the duration of dumpsys phone"
+        priority: "HIGH"
+        category: "telephony"
+      - name: "settings"
+        pattern: "--------- 0.132s was the duration of dumpsys settings"
+        priority: "MEDIUM"
+        category: "settings"
+      - name: "sec_location"
+        pattern: "--------- 0.091s was the duration of dumpsys sec_location"
+        priority: "MEDIUM"
+        category: "location"
+      - name: "audio"
+        pattern: "--------- 0.086s was the duration of dumpsys audio"
+        priority: "HIGH"
+        category: "audio"
+      - name: "vibrator_manager"
+        pattern: "--------- 0.069s was the duration of dumpsys vibrator_manager"
+        priority: "LOW"
+        category: "haptic"
+      - name: "wifiscanner"
+        pattern: "--------- 0.093s was the duration of dumpsys wifiscanner"
+        priority: "MEDIUM"
+        category: "network"
+      - name: "wifi"
+        pattern: "--------- 0.694s was the duration of dumpsys wifi"
+        priority: "HIGH"
+        category: "network"
+      - name: "sem_wifi"
+        pattern: "--------- 10.006s was the duration of dumpsys sem_wifi"
+        priority: "HIGH"
+        category: "network"
+      - name: "vendor_wifi"
+        pattern: "--------- 1.117s was the duration of dumpsys vendor.samsung.hardware.wifi.ISehWifi"
+        priority: "HIGH"
+        category: "network"
+      - name: "gamemanager"
+        pattern: "--------- 3.581s was the duration of dumpsys gamemanager"
+        priority: "MEDIUM"
+        category: "gaming"
+      - name: "sdhms"
+        pattern: "--------- 0.565s was the duration of dumpsys sdhms"
+        priority: "HIGH"
+        category: "system"
+      - name: "AODManagerService"
+        pattern: "--------- 0.074s was the duration of dumpsys AODManagerService"
+        priority: "LOW"
+        category: "display"
+      - name: "ChimeraManagerService"
+        pattern: "--------- 0.073s was the duration of dumpsys ChimeraManagerService"
+        priority: "LOW"
+        category: "system"
+      - name: "CocktailBarService"
+        pattern: "--------- 0.057s was the duration of dumpsys CocktailBarService"
+        priority: "LOW"
+        category: "ui"
+      - name: "CustomFrequencyManagerService"
+        pattern: "--------- 0.083s was the duration of dumpsys CustomFrequencyManagerService"
+        priority: "MEDIUM"
+        category: "system"
+      - name: "DualDARPolicy"
+        pattern: "--------- 0.050s was the duration of dumpsys DualDARPolicy"
+        priority: "LOW"
+        category: "policy"
+      - name: "HardcoderService"
+        pattern: "--------- 0.050s was the duration of dumpsys HardcoderService"
+        priority: "MEDIUM"
+        category: "performance"
+      - name: "HqmManagerService"
+        pattern: "--------- 0.053s was the duration of dumpsys HqmManagerService"
+        priority: "LOW"
+        category: "system"
+      - name: "IntelligentBatterySaverService"
+        pattern: "--------- 0.053s was the duration of dumpsys IntelligentBatterySaverService"
+        priority: "HIGH"
+        category: "power"
+      - name: "PkgPredictorService"
+        pattern: "--------- 0.057s was the duration of dumpsys PkgPredictorService"
+        priority: "LOW"
+        category: "system"
+      - name: "PowerSolution_Framework_service"
+        pattern: "--------- 0.061s was the duration of dumpsys PowerSolution_Framework_service"
+        priority: "HIGH"
+        category: "power"
+      - name: "SemService"
+        pattern: "--------- 0.972s was the duration of dumpsys SemService"
+        priority: "MEDIUM"
+        category: "system"
+      - name: "accessibility"
+        pattern: "--------- 0.089s was the duration of dumpsys accessibility"
+        priority: "HIGH"
+        category: "accessibility"
+      - name: "account"
+        pattern: "--------- 0.059s was the duration of dumpsys account"
+        priority: "LOW"
+        category: "account"
+      - name: "activity_task"
+        pattern: "--------- 0.054s was the duration of dumpsys activity_task"
+        priority: "HIGH"
+        category: "system"
+      - name: "adb"
+        pattern: "--------- 0.061s was the duration of dumpsys adb"
+        priority: "MEDIUM"
+        category: "debug"
+      - name: "alarm"
+        pattern: "--------- 0.089s was the duration of dumpsys alarm"
+        priority: "MEDIUM"
+        category: "alarm"
+      - name: "camera_service"
+        pattern: "--------- 0.002s was the duration of dumpsys android.frameworks.cameraservice.service"
+        priority: "HIGH"
+        category: "camera"
+      - name: "sensor_manager"
+        pattern: "--------- 0.053s was the duration of dumpsys android.frameworks.sensorservice"
+        priority: "MEDIUM"
+        category: "sensor"
+      - name: "stats"
+        pattern: "--------- 0.052s was the duration of dumpsys android.frameworks.stats"
+        priority: "LOW"
+        category: "stats"
+      - name: "audio_hal"
+        pattern: "--------- 0.001s was the duration of dumpsys android.hardware.audio"
+        priority: "HIGH"
+        category: "audio"
+      - name: "camera_provider"
+        pattern: "--------- 0.001s was the duration of dumpsys android.hardware.camera.provider"
+        priority: "HIGH"
+        category: "camera"
+      - name: "drm_widevine"
+        pattern: "--------- 1.627s was the duration of dumpsys android.hardware.drm.IDrmFactory/widevine"
+        priority: "HIGH"
+        category: "drm"
+      - name: "gnss"
+        pattern: "--------- 0.002s was the duration of dumpsys android.hardware.gnss"
+        priority: "MEDIUM"
+        category: "location"
+      - name: "graphics_allocator"
+        pattern: "--------- 0.002s was the duration of dumpsys android.hardware.graphics.allocator"
+        priority: "MEDIUM"
+        category: "graphics"
+
+      # ============================================================================
+      # B. ACTIVITY MANAGER 子章节 (ACTIVITY MANAGER 开头)
+      # ============================================================================
+      - name: "activity_activities"
+        pattern: "ACTIVITY MANAGER ACTIVITIES"
+        priority: "HIGH"
+        category: "activity"
+      - name: "activity_settings"
+        pattern: "ACTIVITY MANAGER SETTINGS"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_allowed_associations"
+        pattern: "ACTIVITY MANAGER ALLOWED ASSOCIATION STATE"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_pending_intents"
+        pattern: "ACTIVITY MANAGER PENDING INTENTS"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_broadcasts"
+        pattern: "ACTIVITY MANAGER BROADCAST STATE"
+        priority: "CRITICAL"
+        category: "activity"
+      - name: "activity_broadcast_stats"
+        pattern: "ACTIVITY MANAGER BROADCAST STATS STATE"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_providers"
+        pattern: "ACTIVITY MANAGER CONTENT PROVIDERS"
+        priority: "HIGH"
+        category: "activity"
+      - name: "activity_uri_permissions"
+        pattern: "ACTIVITY MANAGER URI PERMISSIONS"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_services"
+        pattern: "ACTIVITY MANAGER SERVICES"
+        priority: "HIGH"
+        category: "activity"
+      - name: "activity_recents"
+        pattern: "ACTIVITY MANAGER RECENT TASKS"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_lastanr"
+        pattern: "ACTIVITY MANAGER LAST ANR"
+        priority: "CRITICAL"
+        category: "activity"
+      - name: "activity_starter"
+        pattern: "ACTIVITY MANAGER STARTER"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_containers"
+        pattern: "ACTIVITY MANAGER CONTAINERS"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_lru_processes"
+        pattern: "ACTIVITY MANAGER LRU PROCESSES"
+        priority: "HIGH"
+        category: "activity"
+      - name: "activity_exit_info"
+        pattern: "ACTIVITY MANAGER PROCESS EXIT INFO"
+        priority: "HIGH"
+        category: "activity"
+      - name: "activity_lmk"
+        pattern: "ACTIVITY MANAGER LMK KILLS"
+        priority: "CRITICAL"
+        category: "activity"
+      - name: "activity_mars"
+        pattern: "ACTIVITY MANAGER MARs"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_mars_history"
+        pattern: "ACTIVITY MANAGER MARs HISTORY"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_filter_history"
+        pattern: "ACTIVITY MANAGER FILTER HISTORY"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_freecess"
+        pattern: "ACTIVITY MANAGER Freecess"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_pds"
+        pattern: "ACTIVITY MANAGER PDS"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_pds_history"
+        pattern: "ACTIVITY MANAGER PDS HISTORY"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_processes"
+        pattern: "ACTIVITY MANAGER RUNNING PROCESSES"
+        priority: "HIGH"
+        category: "activity"
+      - name: "activity_users"
+        pattern: "ACTIVITY MANAGER USERS"
+        priority: "MEDIUM"
+        category: "activity"
+      - name: "activity_component_alias"
+        pattern: "ACTIVITY MANAGER COMPONENT-ALIAS"
+        priority: "LOW"
+        category: "activity"
+      - name: "activity_content_dispatcher"
+        pattern: "ACTIVITY MANAGER CONTENT_DISPATCHER"
+        priority: "MEDIUM"
+        category: "activity"
+
+  dumpsys_sepunion:
+    priority: HIGH
+    category: "dumpsys"
+    boundary_type: "hash_separator"
+    description: "Samsung 特定系统服务 dumpsys"
+    start_pattern: "^##### .+ #####$"
+    end_pattern: "^#####|^------"
+    line_count_estimate: 100000
+    size_estimate_mb: 30
+
+  # ============================================================================
+  # 5. Logcat 日志 - 关键日志分析
+  # ============================================================================
+  system_log:
+    priority: CRITICAL
+    category: "logcat"
+    boundary_type: "dash_separator"
+    description: "系统日志 (最大日志段)"
+    start_pattern: "^------ SYSTEM LOG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'SYSTEM LOG'"
+    line_count_estimate: 285000
+    size_estimate_mb: 85
+
+  event_log:
+    priority: HIGH
+    category: "logcat"
+    boundary_type: "dash_separator"
+    description: "事件日志"
+    start_pattern: "^------ EVENT LOG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'EVENT LOG'"
+    line_count_estimate: 17900
+
+  stats_log:
+    priority: MEDIUM
+    category: "logcat"
+    boundary_type: "dash_separator"
+    description: "统计日志"
+    start_pattern: "^------ STATS LOG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'STATS LOG'"
+    line_count_estimate: 2
+
+  radio_log:
+    priority: HIGH
+    category: "logcat"
+    boundary_type: "dash_separator"
+    description: "无线电日志"
+    start_pattern: "^------ RADIO LOG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'RADIO LOG'"
+    line_count_estimate: 10900
+
+  # ============================================================================
+  # 6. 内核日志 (Kernel)
+  # ============================================================================
+  kernel_log:
+    priority: HIGH
+    category: "kernel"
+    boundary_type: "dash_separator"
+    description: "内核日志 (dmesg)"
+    start_pattern: "^------ KERNEL LOG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'KERNEL LOG'"
+    line_count_estimate: 4650
+
+  kernel_ap_klog:
+    priority: MEDIUM
+    category: "kernel"
+    boundary_type: "dash_separator"
+    description: "内核 AP 日志"
+    start_pattern: "^------ KERNEL AP_KLOG"
+    end_pattern: "^------ BINDER FAILED"
+    line_count_estimate: 16300
+
+  last_kmsg:
+    priority: HIGH
+    category: "kernel"
+    boundary_type: "dash_separator"
+    description: "最后内核消息"
+    start_pattern: "^------ LAST KMSG"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'LAST KMSG'"
+    line_count_estimate: 77000
+    size_estimate_mb: 23
+
+  # ============================================================================
+  # 7. ANR/Traces (问题定位关键)
+  # ============================================================================
+  vm_traces_just_now:
+    priority: CRITICAL
+    category: "traces"
+    boundary_type: "dash_separator"
+    description: "当前 VM traces"
+    start_pattern: "^------ VM TRACES JUST NOW"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'VM TRACES JUST NOW'"
+    line_count_estimate: 93000
+
+  vm_traces_anr:
+    priority: CRITICAL
+    category: "traces"
+    boundary_type: "dash_separator"
+    description: "ANR 时的 VM traces"
+    start_pattern: "^------ VM TRACES AT LAST ANR"
+    end_pattern: "^------ (ANR FILES|OLOG)"
+    line_count_estimate: 50000
+
+  anr_files:
+    priority: CRITICAL
+    category: "traces"
+    boundary_type: "dash_separator"
+    description: "ANR 文件列表"
+    start_pattern: "^------ ANR FILES"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'ANR FILES'"
+    line_count_estimate: 5
+
+  process_traces:
+    priority: CRITICAL
+    category: "traces"
+    boundary_type: "trace_start"
+    description: "进程堆栈跟踪"
+    start_pattern: "^----- pid \\d+ at \\d{4}-\\d{2}-\\d{2}"
+    end_pattern: "^----- (end|pid|Waiting)"
+    line_count_estimate: 1000
+    is_multi_line: true
+
+  # ============================================================================
+  # 8. 系统信息 (System Info)
+  # ============================================================================
+  system_properties:
+    priority: MEDIUM
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "系统属性 (getprop)"
+    start_pattern: "^------ SYSTEM PROPERTIES"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'SYSTEM PROPERTIES'"
+    line_count_estimate: 1800
+
+  cpu_info:
+    priority: MEDIUM
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "CPU 信息 (top)"
+    start_pattern: "^------ CPU INFO"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'CPU INFO'"
+    line_count_estimate: 104000
+
+  processes_threads:
+    priority: MEDIUM
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "进程和线程列表 (ps)"
+    start_pattern: "^------ PROCESSES AND THREADS"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'PROCESSES AND THREADS'"
+    line_count_estimate: 10400
+
+  # ============================================================================
+  # 9. 电源/电池信息
+  # ============================================================================
+  battery_log:
+    priority: HIGH
+    category: "power"
+    boundary_type: "asterisk_separator"
+    description: "电池日志"
+    start_pattern: "^\\*{3,}Battery.*\\*{3,}$"
+    end_pattern: "^\\*{3,}|$"
+    line_count_estimate: 200
+    is_multi_line: true
+
+  power_off_reset:
+    priority: HIGH
+    category: "power"
+    boundary_type: "dash_separator"
+    description: "关机重启原因"
+    start_pattern: "^------ POWER OFF RESET REASON"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'POWER OFF RESET REASON'"
+    line_count_estimate: 200
+
+  # ============================================================================
+  # 10. 存储/IO 信息
+  # ============================================================================
+  storaged_io:
+    priority: MEDIUM
+    category: "storage"
+    boundary_type: "dash_separator"
+    description: "存储 IO 统计"
+    start_pattern: "^------ STORAGED IO INFO"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'STORAGED IO INFO'"
+    line_count_estimate: 200
+
+  filesystem_free:
+    priority: LOW
+    category: "storage"
+    boundary_type: "dash_separator"
+    description: "文件系统空间"
+    start_pattern: "^------ FILESYSTEMS & FREE SPACE"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'FILESYSTEMS & FREE SPACE'"
+    line_count_estimate: 80
+
+  ufs_info:
+    priority: MEDIUM
+    category: "storage"
+    boundary_type: "dash_separator"
+    description: "UFS 存储信息 (Samsung)"
+    start_pattern: "^------ UFS "
+    end_pattern: "^------ (USB|NFC|DISPLAY|AP)"
+    line_count_estimate: 300
+
+  # ============================================================================
+  # 11. 显示相关信息
+  # ============================================================================
+  display_debug:
+    priority: MEDIUM
+    category: "display"
+    boundary_type: "dash_separator"
+    description: "显示调试信息"
+    start_pattern: "^------ DISPLAY DEBUG INFO"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'DISPLAY DEBUG INFO'"
+    line_count_estimate: 516000
+    size_estimate_mb: 155
+
+  # ============================================================================
+  # 12. 文件系统调试
+  # ============================================================================
+  filesystem_debug:
+    priority: LOW
+    category: "fs"
+    boundary_type: "dash_separator"
+    description: "文件系统调试信息"
+    start_pattern: "^------ FILESYSTEM DEBUG INFO"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'FILESYSTEM DEBUG INFO'"
+    line_count_estimate: 8200
+
+  dlog_history:
+    priority: LOW
+    category: "fs"
+    boundary_type: "dash_separator"
+    description: "DLOG 历史记录"
+    start_pattern: "^------ DLOG HISTORY"
+    end_pattern: "^------ (UFS|DUMPSTATE)"
+    line_count_estimate: 100
+
+  # ============================================================================
+  # 13. 其他系统信息
+  # ============================================================================
+  psi_info:
+    priority: LOW
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "PSI 压力信息"
+    start_pattern: "^------ PSI (cpu|memory|io)"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'PSI"
+    line_count_estimate: 20
+
+  vmalloc_info:
+    priority: LOW
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "VMALLOC 信息"
+    start_pattern: "^------ VMALLOC INFO"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'VMALLOC INFO'"
+    line_count_estimate: 17500
+
+  slab_info:
+    priority: LOW
+    category: "system"
+    boundary_type: "dash_separator"
+    description: "SLAB 内存分配器信息"
+    start_pattern: "^------ SLAB INFO"
+    end_pattern: "^------ \\d+\\.\\d+s was the duration of 'SLAB INFO'"
+    line_count_estimate: 400
+
+# ================================================================================
+# 日志行模式 (Line Patterns) - 完整版
+# ================================================================================
+
+line_patterns:
+
+  # Logcat 行格式: 12-30 10:00:00.571  root  1123  1123 D io_stats
+  logcat_line:
+    pattern: "^(\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+(\\S+)\\s+(\\d+)\\s+(\\d+)\\s+([A-Z])\\s+(.+)$"
+    groups:
+      timestamp: 1
+      tag: 2
+      pid: 3
+      tid: 4
+      level: 5
+      message: 6
+
+  # Kernel log 行格式: [    0.000000] message
+  kernel_line:
+    pattern: "^\\[\\s*(\\d+\\.\\d+)\\]\\s+(.+)$"
+    groups:
+      timestamp: 1
+      message: 2
+
+  # 进程 trace 行格式
+  trace_line:
+    pattern: "^(.+)\\s+at\\s+(.+)$"
+    groups:
+      thread_info: 1
+      stack_frame: 2
+
+  # 系统属性行格式
+  property_line:
+    pattern: "^(\\[.*?\\])\\s*\\[.*?\\]:\\s*\\[(.*?)\\]\\s*(.*)$"
+    groups:
+      timestamp: 1
+      key: 2
+      value: 3
+
+# ================================================================================
+# 关键字配置 (用于快速定位问题)
+# ================================================================================
+
+keywords:
+
+  critical:
+    - "FATAL"
+    - "ANR"
+    - "crash"
+    - "died"
+    - "force finish"
+    - "Application Not Responding"
+    - "Native crash"
+    - "tombstone"
+    - "*** *** ***"
+    - "SIGKILL"
+    - "signal 9"
+
+  error:
+    - "ERROR"
+    - "Exception"
+    - "failed"
+    - "timeout"
+    - "Process.*exit"
+    - "has died"
+    - "not responding"
+    - "Transaction failed"
+    - "binder error"
+
+  warning:
+    - "WARN"
+    - "Slow"
+    - "delay"
+    - "blocking"
+    - "waited too long"
+    - "binder transaction"
+    - "CPU idle"
+
+  performance:
+    - "binder transaction"
+    - "binder call"
+    - "CPU usage"
+    - "memory pressure"
+    - "low memory"
+    - "kswapd"
+    - "ion heap"
+    - "GPU timeout"
+    - "SurfaceFlinger"
+    - "frame deadline"
+
+# ================================================================================
+# 分块配置 (Chunking)
+# =============================================================================
+
+chunking:
+
+  default_size: 5242880  # 5MB
+  min_size: 1048576      # 1MB
+  max_size: 10485760     # 10MB
+
+  by_section: true
+
+  # 需要完整保留的章节 (不拆分)
+  preserve_sections:
+    - "dumpsys_critical"
+    - "dumpsys_high"
+    - "dumpsys_normal"
+    - "system_log"
+    - "kernel_log"
+    - "binder_state"
+    - "vm_traces_just_now"
+    - "vm_traces_anr"
+    - "display_debug"
+
+# ================================================================================
+# 文件元数据
+# =============================================================================
+
+file_metadata:
+  format_version: "2.0"
+  android_version: "16"
+  device_model: "SM-F9660"
+  build_id: "BP2A.250605.031.A3"
+  report_time: "2025-12-30 10:00:18"
+  total_size_mb: 196.4
