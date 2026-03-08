@@ -1,0 +1,270 @@
+version: "1.0"
+description: "Android 系统专家知识库配置"
+
+expert_domains:
+  system_services:
+    name: "Android Framework Services"
+    priority_keywords:
+      - "ActivityManager"
+      - "PackageManager"
+      - "WindowManager"
+      - "PowerManager"
+      - "BatteryStats"
+      - "SensorService"
+      - "LocationManager"
+      - "ConnectivityService"
+      - "AudioService"
+      - "SurfaceFlinger"
+    analysis_patterns:
+      performance:
+        - "ANR in"
+        - "slow operation"
+        - "timeout"
+        - "blocked on"
+        - "waited too long"
+      lifecycle:
+        - "onStartCommand"
+        - "onBind"
+        - "onDestroy"
+        - "Service record"
+      memory:
+        - "LowMemoryKiller"
+        - "OOM"
+        - "out of memory"
+        - "kill process"
+
+  kernel:
+    name: "Linux Kernel"
+    priority_keywords:
+      - "Binder"
+      - "wakelock"
+      - "alarmtimer"
+      - "cpufreq"
+      - "thermal"
+      - "ion"
+      - "dmabuf"
+      - "scheduler"
+      - "cgroup"
+    analysis_patterns:
+      performance:
+        - "CPU.*stuck"
+        - "rcu_preempt"
+        - "softlockup"
+        - "hung_task"
+      power:
+        - "suspend"
+        - "resume"
+        - "wakeup_source"
+        - "pm_runtime"
+      memory:
+        - "Out of memory"
+        - "Kill process"
+        - "page allocation"
+        - "slab"
+
+  native_services:
+    name: "Native System Services"
+    priority_keywords:
+      - "surfaceflinger"
+      - "vold"
+      - "netd"
+      - "installd"
+      - "lmkd"
+      - "logd"
+      - "hwservicemanager"
+      - "vndservicemanager"
+      - "cameraserver"
+      - "mediadrmserver"
+    analysis_patterns:
+      crash:
+        - "signal 11"
+        - "SIGSEGV"
+        - "SIGABRT"
+        - "fault addr"
+      performance:
+        - "slow dispatch"
+        - "binder thread"
+        - "timeout"
+
+  binder:
+    name: "Binder IPC"
+    priority_keywords:
+      - "binder"
+      - "IPCThreadState"
+      - "ProcessState"
+      - "BpBinder"
+      - "BBinder"
+      - "IPC"
+      - "transaction"
+    analysis_patterns:
+      performance:
+        - "binder thread.*blocked"
+        - "transaction.*timeout"
+        - "oneway.*failed"
+        - "binder.*failed"
+      deadlock:
+        - "deadlock"
+        - "circular"
+        - "waiting for lock"
+
+focus_areas:
+  performance:
+    name: "性能分析"
+    key_metrics:
+      - name: "启动时间"
+        patterns:
+          - "Displayed.*com\\..*:.+ms"
+          - "TotalTime:"
+          - "Startup duration"
+        threshold:
+          cold_start: 5000
+          warm_start: 2000
+          hot_start: 500
+
+      - name: "帧率/Jank"
+        patterns:
+          - "Choreographer.*skipped"
+          - "jank.*count"
+          - "SF.*frame miss"
+          - "vsync.*late"
+        threshold:
+          jank_count: 5
+          serious_jank: 100
+
+      - name: "Binder调用"
+        patterns:
+          - "binder.*took.*ms"
+          - "Slow operation"
+          - "binder call duration"
+        threshold:
+          slow_binder: 50
+          very_slow: 200
+
+      - name: "锁竞争"
+        patterns:
+          - "waiting to lock"
+          - "blocked on"
+          - "monitor contention"
+        threshold:
+          lock_wait: 100
+
+  background_control:
+    name: "后台行为管控"
+    key_metrics:
+      - name: "后台进程"
+        patterns:
+          - "Background kill"
+          - "trim memory"
+          - "app idle"
+          - "standby bucket"
+      
+      - name: "后台限制"
+        patterns:
+          - "Background restriction"
+          - "App Standby"
+          - "Doze mode"
+          - "App freezer"
+
+      - name: "进程优先级"
+        patterns:
+          - "oom_adj"
+          - "setAdj"
+          - "Process priority"
+          - "sched_group"
+
+  animation_jank:
+    name: "动画延迟/Jank"
+    key_metrics:
+      - name: "Choreographer"
+        patterns:
+          - "Choreographer.*skipped.*frames"
+          - "doFrame.*took"
+          - "vsync.*missed"
+
+      - name: "SurfaceFlinger"
+        patterns:
+          - "SF.*missed frame"
+          - "BufferQueue.*dropped"
+          - "GPU.*composited"
+
+      - name: "RenderThread"
+        patterns:
+          - "RenderThread.*took"
+          - "drawFrame.*ms"
+          - "eglSwapBuffers"
+
+      - name: "Launcher"
+        patterns:
+          - "Launcher.*jank"
+          - "Recents.*jank"
+          - "Transition.*delayed"
+
+  power_consumption:
+    name: "电量功耗"
+    key_metrics:
+      - name: "唤醒锁"
+        patterns:
+          - "WakeLock.*held"
+          - "Partial wake lock"
+          - "wakelock.*timeout"
+
+      - name: "电池统计"
+        patterns:
+          - "BatteryHistory"
+          - "Signal strength"
+          - "Wifi scan"
+          - "Radio active"
+
+      - name: "后台耗电"
+        patterns:
+          - "Background battery"
+          - "Wakeups"
+          - "Alarm.*triggered"
+
+analysis_templates:
+  performance_issue:
+    name: "性能问题分析模板"
+    sections:
+      - "问题描述"
+      - "关键时间线"
+      - "瓶颈识别"
+      - "根因分析"
+      - "优化建议"
+
+  jank_analysis:
+    name: "Jank分析模板"
+    sections:
+      - "Jank统计"
+      - "主线程耗时分布"
+      - "RenderThread分析"
+      - "SurfaceFlinger状态"
+      - "优化建议"
+
+  power_issue:
+    name: "功耗问题分析模板"
+    sections:
+      - "耗电分布"
+      - "唤醒源分析"
+      - "后台活动统计"
+      - "异常耗电识别"
+      - "优化建议"
+
+output_format:
+  report_structure:
+    - title: "问题概述"
+      content: "一句话描述核心问题"
+    
+    - title: "关键发现"
+      content: "3-5个关键发现点"
+    
+    - title: "详细分析"
+      subsections:
+        - "时间线重建"
+        - "瓶颈定位"
+        - "根因分析"
+    
+    - title: "优化建议"
+      content: "可操作的具体建议"
+    
+    - title: "相关日志片段"
+      content: "关键日志引用"

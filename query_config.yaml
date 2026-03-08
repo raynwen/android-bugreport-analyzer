@@ -1,0 +1,27 @@
+# query_config.yaml - 查询全局默认配置
+# 存放在方案根目录，所有查询共用此配置
+
+version: "1.0"
+
+output:
+  # 上下文行数
+  context_lines_before: 5
+  context_lines_after: 5
+
+  # 分页配置
+  pagination:
+    enabled: true
+    max_tokens_per_file: 32000  # AI context 的 50% (假设 64K)
+    encoding: "cl100k_base"     # OpenAI 的 token 编码
+
+# 查询优先级
+priority_order:
+  - "CRITICAL"
+  - "HIGH"
+  - "MEDIUM"
+  - "LOW"
+
+# 索引配置
+index:
+  rebuild_on_new_query: true   # 新查询时是否重建 custom_index
+  keep_history: false          # 是否保留历史查询结果

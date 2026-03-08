@@ -1,8 +1,8 @@
 # Android Bug Report 高效处理与精确分析系统架构设计
 
 > **作者**: 闫文峰
-> **版本**: 2.2
-> **更新日期**: 2026-03-07
+> **版本**: 2.4
+> **更新日期**: 2026-03-08
 > **输入说明**: 直接读取 .txt 文本文件（如 `dumpstate.txt`），无需解压
 
 ---
@@ -11,6 +11,8 @@
 
 | 版本 | 日期 | 作者 | 变更内容 |
 |------|------|------|---------|
+| 2.4 | 2026-03-08 | 闫文峰 | 新增统一命令行入口 cli.py，整合 build/query/analyze 命令 |
+| 2.3 | 2026-03-08 | 闫文峰 | 新增自定义查询系统：AI Agent 驱动 + 动态索引 + 分页输出 |
 | 2.2 | 2026-03-07 | 闫文峰 | 新增用户查询系统：预设优先 + 定制补充双模式 |
 | 2.1 | 2026-03-07 | 闫文峰 | 新增用户查询系统：关键词查询、时间段查询、组合查询 |
 | 2.0 | 2026-03-07 | 闫文峰 | 新增边界分隔符总表、分层 subsections 设计、优先级分类 |
@@ -1742,6 +1744,442 @@ class QueryHandler:
 
 ---
 
+## 12. 自定义查询系统 (v2.3 新增)
+
+### 12.1 设计背景
+
+预设的 36 个关键词无法覆盖所有用户查询场景。当用户需要查询任意字符串（如应用包名、错误码等）时，需要一种灵活的自定义查询机制。
+
+### 12.2 核心设计
+
+| 特性 | 说明 |
+|------|------|
+| **AI Agent 驱动** | AI Agent 理解用户意图，生成查询配置 |
+| **动态索引** | 每次新查询时重建自定义索引 |
+| **分页输出** | 按 AI context 窗口大小自动分页 |
+| **向后兼容** | 保留原有预设索引 |
+
+### 12.3 配置文件
+
+#### 12.3.1 query_config.yaml (全局默认配置)
+
+存放在方案根目录，所有查询共用此配置：
+
+```yaml
+# query_config.yaml - 查询全局默认配置
+version: "1.0"
+
+output:
+  # 上下文行数
+  context_lines_before: 5
+  context_lines_after: 5
+  
+  # 分页配置
+  pagination:
+    enabled: true
+    max_tokens_per_file: 32000  # AI context 的 50% (假设 64K)
+    encoding: "cl100k_base"     # OpenAI 的 token 编码
+
+# 查询优先级
+priority_order:
+  - "CRITICAL"
+  - "HIGH"
+  - "MEDIUM"
+  - "LOW"
+
+# 索引配置
+index:
+  rebuild_on_new_query: true   # 新查询时是否重建 custom_index
+  keep_history: false          # 是否保留历史查询结果
+```
+
+#### 12.3.2 custom_queries.yaml (用户查询配置)
+
+每次查询时由 AI Agent 自动生成，存放在 output_dir：
+
+```yaml
+# custom_queries.yaml - 用户自定义查询配置
+version: "1.0"
+created_at: "2026-03-08T10:00:00"
+
+queries:
+  # 类型1: 简单关键词
+  - name: "query_app_example"
+    type: "keyword"           # keyword | regex | section
+    pattern: "com.example"   # 搜索模式
+    priority: "HIGH"         # CRITICAL | HIGH | MEDIUM | LOW
+    description: "查询 com.example 应用的信息"
+    enabled: true
+
+  # 类型2: 正则表达式
+  - name: "query_error_codes"
+    type: "regex"
+    pattern: "ERROR_[0-9]{4}" # 匹配 ERROR_0001 到 ERROR_9999
+    priority: "MEDIUM"
+    description: "查询错误码"
+    enabled: true
+
+  # 类型3: 章节名匹配
+  - name: "query_activity_mars"
+    type: "section"
+    pattern: "activity_mars"  # 匹配章节名包含 mars 的
+    priority: "HIGH"
+    description: "查询 mars 相关章节"
+    enabled: true
+```
+
+### 12.4 索引文件结构
+
+```
+output_dir/                          # 例如: dumpState_F9660ZCS6AYKF_202512301000/
+  ├── dumpstate.txt                # 原始文件
+  ├── enhanced_index.json          # 原有索引 (36 个预设关键词)
+  ├── sections.json                # 章节索引
+  ├── custom_queries.yaml         # 用户查询配置 (每次生成)
+  ├── custom_index.json           # 自定义索引 (每次重建)
+  └── query_results/              # 查询结果
+      └── {query_name}/
+          ├── result.json         # 查询结果主文件
+          ├── context/            # 完整上下文
+          │   ├── part_1.json    # 分页文件
+          │   └── part_2.json
+          └── metadata.json       # 元信息
+```
+
+### 12.5 查询流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      用户输入                                    │
+│         关键词 + pattern + type + description                   │
+└────────────────────────────┬────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    步骤1: 准备输出目录                            │
+│              创建 output_dir/query_results/{query_name}/          │
+└────────────────────────────┬────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    步骤2: 生成配置文件                            │
+│     加载 query_config.yaml (全局配置)                            │
+│     生成 custom_queries.yaml (用户查询)                           │
+└────────────────────────────┬────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    步骤3: 清除旧索引                              │
+│     删除 output_dir/custom_index.json                            │
+│     删除 output_dir/query_results/ (可选)                        │
+└────────────────────────────┬────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    步骤4: 重建自定义索引                          │
+│     全量扫描文件 → 匹配 pattern → 生成 custom_index.json         │
+│     支持: keyword | regex | section 三种匹配类型                 │
+└────────────────────────────┬────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    步骤5: 执行查询                               │
+│     合并 enhanced_index.json + custom_index.json                 │
+│     定位匹配行 → 提取上下文                                       │
+└────────────────────────────┬────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    步骤6: 分页保存                               │
+│     按 query_config.yaml 配置进行分页                             │
+│     保存 result.json + context/part_*.json                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 12.6 匹配类型说明
+
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| **keyword** | 简单字符串匹配 | `pattern: "com.example"` 匹配包含 "com.example" 的行 |
+| **regex** | 正则表达式匹配 | `pattern: "ERROR_[0-9]{4}"` 匹配 "ERROR_0001" 到 "ERROR_9999" |
+| **section** | 章节名匹配 | `pattern: "activity_mars"` 匹配章节名包含 "mars" 的章节 |
+
+### 12.7 索引优先级
+
+查询时按以下优先级使用索引：
+
+```
+1. custom_index.json (自定义索引) - 优先级最高
+2. enhanced_index.json (预设索引) - 36 个预设关键词
+3. sections.json (章节索引) - 按章节名匹配
+4. 全文扫描 -兜底方案
+```
+
+### 12.8 分页逻辑
+
+```
+每页最大 tokens: 32000 (假设 AI context 为 64K 的 50%)
+平均每行 tokens: ~10
+每页约: 3200 行
+
+如果匹配 10000 行:
+→ 约 3-4 个分页文件 (part_1.json, part_2.json, ...)
+```
+
+### 12.9 输出文件格式
+
+**result.json:**
+```json
+{
+  "query": "com.example",
+  "type": "keyword",
+  "total_matches": 150,
+  "pagination": {
+    "total_parts": 2,
+    "current_part": 1
+  },
+  "results": [
+    {
+      "line_number": 12345,
+      "content": "-RST 2025/12/17 22:51:48...Pkg com.example...",
+      "context": {
+        "before": ["...", "...", "...", "...", "..."],
+        "after": ["...", "...", "...", "...", "..."]
+      }
+    }
+  ]
+}
+```
+
+### 12.10 与现有系统的集成
+
+| 模块 | 修改内容 |
+|------|---------|
+| `enhanced_index.py` | 支持加载和合并 custom_index.json |
+| 新增 `custom_index_manager.py` | 管理自定义索引的创建和查询 |
+| 新增 `query_result_writer.py` | 负责分页和写入结果 |
+| 新增 `query_config.yaml` | 全局查询配置 |
+
+---
+
+## 13. 统一命令行入口 (v2.4 新增)
+
+### 13.1 设计目标
+
+提供统一的命令行入口 `cli.py`，整合所有功能模块：
+
+| 目标 | 说明 |
+|------|------|
+| **统一入口** | 所有功能通过 `cli.py` 访问 |
+| **自动依赖** | 自动检测并构建缺失的索引 |
+| **清晰命令** | 子命令结构，语义明确 |
+| **向后兼容** | 保留独立脚本供高级用户使用 |
+
+### 13.2 命令结构
+
+```
+cli.py
+├── build     # 构建索引
+├── query     # 执行查询
+├── analyze   # 完整分析流程（build + query）
+└── interactive # 交互式模式
+```
+
+### 13.3 使用示例
+
+```bash
+# 构建索引
+python cli.py build <output_dir>
+
+# 执行查询
+python cli.py query <output_dir> --pattern "com.tencent.mm" --type keyword
+
+# 正则查询
+python cli.py query <output_dir> \
+    --name "query_wechat_freeze" \
+    --pattern "com\.tencent\.mm.*freeze" \
+    --type regex \
+    --priority CRITICAL
+
+# 完整分析流程（自动构建索引 + 执行查询）
+python cli.py analyze <output_dir> --pattern "ANR"
+
+# 使用配置文件批量查询
+python cli.py query <output_dir> --config queries.json
+
+# 交互式模式
+python cli.py interactive
+```
+
+### 13.4 命令详解
+
+#### 13.4.1 build 命令
+
+构建预设索引（sections.json + enhanced_index.json）：
+
+```bash
+python cli.py build <output_dir> [options]
+
+Options:
+  --force          强制重建索引（覆盖现有索引）
+  --verbose        显示详细输出
+```
+
+**输出文件**：
+```
+output_dir/
+├── sections.json         # 章节索引
+└── enhanced_index.json   # 预设关键词索引
+```
+
+#### 13.4.2 query 命令
+
+执行自定义查询：
+
+```bash
+python cli.py query <output_dir> [options]
+
+Options:
+  --name           查询名称
+  --pattern        匹配模式
+  --type           查询类型 (keyword|regex|section)
+  --priority       优先级 (CRITICAL|HIGH|MEDIUM|LOW)
+  --description    查询描述
+  --config         查询配置文件路径 (JSON格式)
+  --interactive    交互式输入模式
+  --context-before 上下文前行数 (默认: 5)
+  --context-after  上下文后行数 (默认: 5)
+  --keep-history   保留历史查询结果
+  --auto-build     自动构建缺失的索引
+```
+
+**输出文件**：
+```
+output_dir/
+├── custom_queries.yaml   # 用户查询配置
+├── custom_index.json     # 自定义索引
+└── query_results/
+    └── {query_name}/
+        ├── result.json
+        ├── metadata.json
+        └── context/part_*.json
+```
+
+#### 13.4.3 analyze 命令
+
+完整分析流程（自动执行 build + query）：
+
+```bash
+python cli.py analyze <output_dir> [options]
+
+Options:
+  --pattern        匹配模式
+  --type           查询类型
+  --priority       优先级
+  --description    查询描述
+```
+
+**流程**：
+```
+1. 检查索引是否存在
+   ├── 存在 → 跳过构建
+   └── 不存在 → 自动构建
+2. 执行查询
+3. 保存结果
+```
+
+#### 13.4.4 interactive 命令
+
+交互式模式：
+
+```bash
+python cli.py interactive
+```
+
+**交互流程**：
+```
+1. 选择操作类型
+   ├── 构建索引
+   ├── 执行查询
+   └── 完整分析
+2. 输入参数
+3. 确认执行
+4. 显示结果
+```
+
+### 13.5 自动依赖处理
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    analyze 命令流程                      │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  检查 enhanced_index.json                               │
+│      │                                                  │
+│  ┌──┴──┐                                                │
+│  │存在  │ 不存在                                         │
+│  ▼     ▼                                                │
+│ 跳过   自动执行 build                                   │
+│  │     │                                                │
+│  └──┬──┘                                                │
+│     ▼                                                   │
+│  执行 query                                             │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 13.6 配置文件格式
+
+#### queries.json 示例
+
+```json
+{
+  "queries": [
+    {
+      "name": "query_wechat_freeze",
+      "type": "regex",
+      "pattern": "com\\.tencent\\.mm.*freeze|freeze.*com\\.tencent\\.mm",
+      "priority": "CRITICAL",
+      "description": "查询微信冻结问题",
+      "enabled": true
+    },
+    {
+      "name": "query_anr",
+      "type": "keyword",
+      "pattern": "ANR",
+      "priority": "CRITICAL",
+      "description": "查询ANR问题",
+      "enabled": true
+    }
+  ]
+}
+```
+
+### 13.7 与现有脚本的关系
+
+| 脚本 | 状态 | 说明 |
+|------|------|------|
+| `cli.py` | **新增** | 统一入口，推荐使用 |
+| `build_all_indexes.py` | 保留 | 供高级用户直接调用 |
+| `custom_query.py` | 保留 | 供高级用户直接调用 |
+| `main.py` | 保留 | 交互式分析（完整流程） |
+
+### 13.8 错误处理
+
+```python
+class CLIError(Exception):
+    """CLI 错误基类"""
+    pass
+
+class IndexNotFoundError(CLIError):
+    """索引不存在错误"""
+    def __init__(self, output_dir):
+        super().__init__(f"索引不存在: {output_dir}")
+        self.suggestion = "请先运行: python cli.py build <output_dir>"
+
+class InvalidPatternError(CLIError):
+    """无效模式错误"""
+    def __init__(self, pattern, error):
+        super().__init__(f"无效的正则表达式: {pattern}")
+        self.original_error = error
+```
+
+---
+
 ## 总结
 
 本方案提供了一个完整的 Android Bug Report 处理系统架构，涵盖：
@@ -1753,6 +2191,7 @@ class QueryHandler:
 | **持久化** | 多格式支持、压缩存储、批量写入 |
 | **索引系统** | 预设索引 + 定制索引双模式 |
 | **用户查询** | YAML 预设优先 + 用户定制补充 |
+| **自定义查询** | AI Agent 驱动 + 动态索引 + 分页输出 |
 | **处理流程** | 8 阶段标准化管道 |
 | **性能优化** | 并行处理、资源调度 |
 
@@ -1760,7 +2199,7 @@ class QueryHandler:
 
 ---
 
-## 12. 版本信息
+## 13. 版本信息
 |---------|---------|------|
 | logcat | `^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}` | `12-30 10:00:21.123` |
 | kernel | `^\[\d+\.\d+\]` | `[175555.553540]` |
