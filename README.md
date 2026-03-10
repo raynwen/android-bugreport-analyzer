@@ -204,7 +204,6 @@ output_dir/
 | `cli.py` | **统一命令行入口（推荐使用）** |
 | `build_all_indexes.py` | 构建索引脚本 |
 | `custom_query.py` | 自定义查询脚本 |
-| `main.py` | 交互式分析入口 |
 | `architecture_design.md` | 完整系统架构设计文档 |
 | `boundary_patterns.yaml` | 边界模式配置文件 |
 | `query_config.yaml` | 查询全局配置 |

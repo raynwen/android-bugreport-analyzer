@@ -87,6 +87,7 @@ query_wechat_freeze_specific.py
 quick_preset_query.py
 large_file_processor.py
 tasks.md
+main.py
 
 # Skill internal files (not for GitHub)
 SKILL.md
